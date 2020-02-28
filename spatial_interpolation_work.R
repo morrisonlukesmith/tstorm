@@ -116,6 +116,9 @@ lightning.dat<-spCbind(d,lightning.idw$var1.pred)
 nldn.vgm <- variogram(total_count ~1,msp_nldn)
 nldn.vgm
 
+############################################################
+##### This is the only part I've made changes to in V2 #####
+############################################################
 
 #Let's do the same thing with simple features
 ############################################################
@@ -235,37 +238,48 @@ date.seq <- date.seq %>%
 
 zips <- unique(p$ZIP_CODE)
 
-results <- expand.grid(zip=zips,
+# JC: this is kind of new. Basically, I make a `this.results` and 
+# then I'll glue all those together after each date.seq loop.
+
+this.results <- expand.grid(zip=zips,
                        dt=date.seq$dt,
-                       variable="lightning",
+                       variable="precip_in_mm",
                        value=0.0,
                        stringsAsFactors = F) # almost always do this when 
                                              # you make a dataframe.
 
-results <- as_tibble(results)
+this.results <- as_tibble(this.results)
 
 # This is biggish
-dim(results)
+dim(this.results)
 
 for(dt.idx in 1:nrow(date.seq)){
   this.dt <- date.seq$dt[dt.idx]
   
   # Remove this next for loop. it's causing us to only 
   # do March so I don't have to wait for this to run. 
-  if(!(month(this.dt) == 8 & day(this.dt) < 7)) {
+  if(!(year(this.dt) == 2000 & 
+       month(this.dt) == 8 & 
+       day(this.dt) %in% c(6,7,8))) {
     next
   }
  
   station.day <- station %>% 
     filter(dt==this.dt) 
   
-  # GS holds interpolation for all zips, 
-  # but doesn't have zip code in it. 
-  # Let's add it in and then join
-  gs <- doNearestNeighbor(formula= dayP01 ~ 1, 
-                          station.day,
-                          p,
-                          debug=1)
+  
+  if(nrow(station.day) > 0) {
+    # GS holds interpolation for all zips, 
+    # but doesn't have zip code in it. 
+    # Let's add it in and then join
+    gs <- doNearestNeighbor(formula= dayP01 ~ 1, 
+                            station.day,
+                            p,
+                            debug=1)
+  } else {
+    warning(paste0("Skipping ",this.dt,". Is this expected?"))
+    next
+  }
   
   gs.for.join <- gs %>% 
     as.data.frame %>% 
@@ -277,22 +291,118 @@ for(dt.idx in 1:nrow(date.seq)){
   # Kind of a weird trick to use joins (which are faster)
   # to get data into a data.frame that you've already set up.
   
-  results <- results %>% 
+  this.results <- this.results %>% 
     left_join(gs.for.join,
               by=c("zip","dt"))
     
   # Copy data over
-  results <- results %>% 
+  this.results <- this.results %>% 
     mutate(value = if_else(dt==this.dt,
-                           value=interpolation,
+                           interpolation,
                            value)) 
 
   # and get rid of the join column
-  results$interpolation <- NULL
+  this.results$interpolation <- NULL
   
   print(paste("Just finished with",this.dt))
   flush.console() # need this to print in loops
-  
+}
+
+# TODO: saving this.results seems smart. 
+# I like `readr`. You may need to run
+# install.packages("readr")
+readr::write_tsv(this.results,
+                 paste0(working.dir,"20200226_precip.txt"))
+
+if (!exists("results")){
+  results <- this.results
+} else {
+  stop("Whoa, why does results already exist?\nNot sure if it's okay to write over it.")
 }
 
 
+############  RELATIVE HUMIDITY ######################################
+
+this.results <- expand.grid(zip=zips,
+                            dt=date.seq$dt,
+                            variable="relative_humidity",
+                            value=0.0,
+                            stringsAsFactors = F) # almost always do this when 
+# you make a dataframe.
+
+this.results <- as_tibble(this.results)
+
+# This is biggish
+dim(this.results)
+
+for(dt.idx in 1:nrow(date.seq)){
+  this.dt <- date.seq$dt[dt.idx]
+  
+  # Remove this next for loop. it's causing us to only 
+  # do March so I don't have to wait for this to run. 
+  if(!(year(this.dt) == 2000 & 
+       month(this.dt) == 8 & 
+       day(this.dt) %in% c(6,7,8))) {
+    next
+  }
+  
+  station.day <- station %>% 
+    filter(dt==this.dt) 
+  
+  
+  if(nrow(station.day) > 0) {
+    # GS holds interpolation for all zips, 
+    # but doesn't have zip code in it. 
+    # Let's add it in and then join
+    # JC: change the formula below in each block
+    gs <- doNearestNeighbor(formula= relh ~ 1, 
+                            station.day,
+                            p,
+                            debug=1)
+  } else {
+    warning(paste0("Skipping ",this.dt,". Is this expected?"))
+    next
+  }
+  
+  gs.for.join <- gs %>% 
+    as.data.frame %>% 
+    select(var1.pred) %>% 
+    rename(interpolation = var1.pred) %>% 
+    mutate(zip=p$ZIP_CODE,
+           dt=ymd(this.dt))
+  
+  # Kind of a weird trick to use joins (which are faster)
+  # to get data into a data.frame that you've already set up.
+  
+  this.results <- this.results %>% 
+    left_join(gs.for.join,
+              by=c("zip","dt"))
+  
+  # Copy data over
+  this.results <- this.results %>% 
+    mutate(value = if_else(dt==this.dt,
+                           interpolation,
+                           value)) 
+  
+  # and get rid of the join column
+  this.results$interpolation <- NULL
+  
+  print(paste("Just finished with",this.dt))
+  flush.console() # need this to print in loops
+}
+
+# TODO: saving this.results seems smart. 
+readr::write_tsv(this.results,
+                 paste0(working.dir,"20200226_relative_humidity.txt"))
+
+if (exists("results")){
+  results <- results %>% 
+    bind_rows(this.results)
+  # Let me know if you'd prefer these bound as columns. It's 
+  # just a `left_join` in dplyr. 
+} else {
+  stop("Where's `results`? I thought we already built it. ")
+}
+
+# Note: at 1.7M rows per `this.result`, this is going to get pretty 
+# big pretty fast. Looks like about 50-60 MB per "section".
